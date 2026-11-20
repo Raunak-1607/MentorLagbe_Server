@@ -40,6 +40,20 @@ app.get("/users" , async(req,res)=>{
   const result = await cursor.toArray();
   res.send(result);
 } )
+
+app.patch("/users/:id" , async(req , res)=>{
+  const {id} = req.params;
+  const data = req.body;
+  const filter = {_id: new ObjectId(id)}
+  const result = await users.updateOne(
+    filter,
+    {
+      $set : data
+    }
+  )
+  res.send(result);
+})
+
 app.get("/tuition" , async(req,res)=>{
   const cursor = tuitions.find({});
   const result = await cursor.toArray();
