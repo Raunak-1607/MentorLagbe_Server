@@ -2,7 +2,9 @@ import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 import "dotenv/config";
+import Stripe from "stripe"
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -14,6 +16,8 @@ const client = new MongoClient(process.env.MONGODB_URL);
 let db;
 let tuitions;
 let users;
+let payments
+// let payments:
 
 async function connectToMongoDB() {
   try {
@@ -24,6 +28,7 @@ async function connectToMongoDB() {
     db = client.db("MentorLagbe");
     tuitions = db.collection("tuition");
     users = db.collection("user");
+    payments = db.collection("payments");
 
   } catch (err) {
     console.error("MongoDB connection failed:", err);
@@ -105,7 +110,50 @@ app.post("/tuitions", async (req, res) => {
   res.status(201).send({ message: "Tuition created successfully.", insertedId: result.insertedId });
 });
 
+app.post("/payments" , async(req,res)=>{
+  const {sessionId} = req.body;
+  const {
+     status,
+    payment_status,
+    customer_email,
+    customer_details,
+    metadata,
+    payment_intent,
+  } = await stripe.checkout.sessions.retrieve(sessionId);
 
+  if (status === 'complete' && payment_status == "paid"){
+  const payment = {
+    sessionId,
+     status,
+    payment_status,
+    customer_email,
+    customer_details,
+    userId: metadata.userId,
+    payment_date: new Date(),
+    payment_intent,
+  }
+  const result = await payments.insertOne(payment); 
+  
+  const query = {_id: new ObjectId(metadata.userId)};
+  const  updatedDoc = {
+        $set : {
+          plan : "pro"
+        }
+  }
+  
+  const updateResult = await users.updateOne(
+    query,
+    updatedDoc
+  );
+
+  res.send({ success: true , result , updateResult});
+  return;
+  }
+
+ 
+
+  res.send({success : false , message: "payment verification failed"});
+})
 
 // Start server after MongoDB connection
 async function startServer() {
