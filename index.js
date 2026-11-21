@@ -59,11 +59,20 @@ app.patch("/users/:id" , async(req , res)=>{
   res.send(result);
 })
 
-app.get("/tuition" , async(req,res)=>{
-  const cursor = tuitions.find({});
+app.get("/tuition", async (req, res) => {
+  const { email } = req.query;
+  const filter = email ? { tutorEmail: email } : {};
+  const cursor = tuitions.find(filter);
   const result = await cursor.toArray();
   res.send(result);
-} )
+});
+
+app.get("/tuition/:id" , async(req,res)=>{
+  const id = req.params.id;
+  const query = {_id: new ObjectId(id)};
+  const result = await tuitions.findOne(query);
+  res.send(result);
+})
 
 app.post("/tuitions", async (req, res) => {
   const {
@@ -122,7 +131,13 @@ app.post("/payments" , async(req,res)=>{
   } = await stripe.checkout.sessions.retrieve(sessionId);
 
   if (status === 'complete' && payment_status == "paid"){
-  const payment = {
+  
+    const sessionQuery = {sessionId}
+    const existingPayment = await payments.findOne(sessionQuery);
+    if(existingPayment){
+        return res.send({success: false , message: "Payment already verified"}); 
+    }
+    const payment = {
     sessionId,
      status,
     payment_status,
