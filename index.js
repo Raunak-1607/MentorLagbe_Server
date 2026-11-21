@@ -16,7 +16,8 @@ const client = new MongoClient(process.env.MONGODB_URL);
 let db;
 let tuitions;
 let users;
-let payments
+let payments;
+let applications
 // let payments:
 
 async function connectToMongoDB() {
@@ -29,6 +30,7 @@ async function connectToMongoDB() {
     tuitions = db.collection("tuition");
     users = db.collection("user");
     payments = db.collection("payments");
+    applications = db.collection("applications");
 
   } catch (err) {
     console.error("MongoDB connection failed:", err);
@@ -169,6 +171,87 @@ app.post("/payments" , async(req,res)=>{
 
   res.send({success : false , message: "payment verification failed"});
 })
+
+// 1. Get applications (can filter by studentEmail, tutorEmail, or tuitionId)
+app.get("/applications", async (req, res) => {
+  const { studentEmail, tutorEmail, tuitionId } = req.query;
+  const filter = {};
+  if (studentEmail) filter.studentEmail = studentEmail;
+  if (tutorEmail) filter.tutorEmail = tutorEmail;
+  if (tuitionId) filter.tuitionId = tuitionId;
+
+  const cursor = applications.find(filter);
+  const result = await cursor.toArray();
+  res.send(result);
+});
+
+// 2. Post new student tuition application
+app.post("/applications", async (req, res) => {
+  const {
+    tuitionId,
+    tuitionTitle,
+    subject,
+    monthlyFee,
+    tutorEmail,
+    studentName,
+    studentEmail,
+    studentPhone,
+    preferredSchedule,
+    studentNote,
+  } = req.body;
+
+  if (!tuitionId || !studentPhone || !preferredSchedule || !studentEmail) {
+    return res.status(400).send({ message: "Required fields missing." });
+  }
+
+  // Prevent duplicate application from same student for same tuition
+  const existing = await applications.findOne({ tuitionId, studentEmail });
+  if (existing) {
+    return res.status(400).send({ message: "You have already applied for this tuition." });
+  }
+
+  const application = {
+    tuitionId,
+    tuitionTitle,
+    subject,
+    monthlyFee: Number(monthlyFee),
+    tutorEmail,
+    studentName,
+    studentEmail,
+    studentPhone,
+    preferredSchedule,
+    studentNote: studentNote || "",
+    status: "pending",
+    appliedAt: new Date(),
+  };
+
+  const result = await applications.insertOne(application);
+  res.status(201).send({ message: "Application submitted successfully.", insertedId: result.insertedId });
+});
+
+// Update application decision (accept or reject)
+app.patch("/applications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    // Supports both ObjectId and string id
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id: id };
+    }
+
+    const result = await applications.updateOne(filter, {
+      $set: { status },
+    });
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
 
 // Start server after MongoDB connection
 async function startServer() {
