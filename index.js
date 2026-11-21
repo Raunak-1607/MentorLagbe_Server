@@ -2,9 +2,9 @@ import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 import "dotenv/config";
-import Stripe from "stripe"
+import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -17,7 +17,7 @@ let db;
 let tuitions;
 let users;
 let payments;
-let applications
+let applications;
 // let payments:
 
 async function connectToMongoDB() {
@@ -31,7 +31,6 @@ async function connectToMongoDB() {
     users = db.collection("user");
     payments = db.collection("payments");
     applications = db.collection("applications");
-
   } catch (err) {
     console.error("MongoDB connection failed:", err);
     process.exit(1);
@@ -42,24 +41,21 @@ app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
-app.get("/users" , async(req,res)=>{
+app.get("/users", async (req, res) => {
   const cursor = users.find({});
   const result = await cursor.toArray();
   res.send(result);
-} )
+});
 
-app.patch("/users/:id" , async(req , res)=>{
-  const {id} = req.params;
+app.patch("/users/:id", async (req, res) => {
+  const { id } = req.params;
   const data = req.body;
-  const filter = {_id: new ObjectId(id)}
-  const result = await users.updateOne(
-    filter,
-    {
-      $set : data
-    }
-  )
+  const filter = { _id: new ObjectId(id) };
+  const result = await users.updateOne(filter, {
+    $set: data,
+  });
   res.send(result);
-})
+});
 
 app.get("/tuition", async (req, res) => {
   const { email } = req.query;
@@ -69,12 +65,54 @@ app.get("/tuition", async (req, res) => {
   res.send(result);
 });
 
-app.get("/tuition/:id" , async(req,res)=>{
+// 1. PATCH /tuition/:id (Handles editing fields and closing/reopening isActive)
+app.patch("/tuition/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id: id };
+    }
+
+    const result = await tuitions.updateOne(filter, {
+      $set: updateData,
+    });
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+// 2. DELETE /tuition/:id (Handles deleting a tuition post)
+app.delete("/tuition/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id: id };
+    }
+
+    const result = await tuitions.deleteOne(filter);
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/tuition/:id", async (req, res) => {
   const id = req.params.id;
-  const query = {_id: new ObjectId(id)};
+  const query = { _id: new ObjectId(id) };
   const result = await tuitions.findOne(query);
   res.send(result);
-})
+});
 
 app.post("/tuitions", async (req, res) => {
   const {
@@ -91,8 +129,18 @@ app.post("/tuitions", async (req, res) => {
     tutorEmail,
   } = req.body;
 
-  if (!title || !subject || !classLevel || !location || !description || !tutorName || !tutorEmail) {
-    return res.status(400).send({ message: "Please fill in all required fields." });
+  if (
+    !title ||
+    !subject ||
+    !classLevel ||
+    !location ||
+    !description ||
+    !tutorName ||
+    !tutorEmail
+  ) {
+    return res
+      .status(400)
+      .send({ message: "Please fill in all required fields." });
   }
 
   if (mode !== "Online" && mode !== "Offline") {
@@ -118,13 +166,18 @@ app.post("/tuitions", async (req, res) => {
   };
 
   const result = await tuitions.insertOne(tuition);
-  res.status(201).send({ message: "Tuition created successfully.", insertedId: result.insertedId });
+  res
+    .status(201)
+    .send({
+      message: "Tuition created successfully.",
+      insertedId: result.insertedId,
+    });
 });
 
-app.post("/payments" , async(req,res)=>{
-  const {sessionId} = req.body;
+app.post("/payments", async (req, res) => {
+  const { sessionId } = req.body;
   const {
-     status,
+    status,
     payment_status,
     customer_email,
     customer_details,
@@ -132,45 +185,39 @@ app.post("/payments" , async(req,res)=>{
     payment_intent,
   } = await stripe.checkout.sessions.retrieve(sessionId);
 
-  if (status === 'complete' && payment_status == "paid"){
-  
-    const sessionQuery = {sessionId}
+  if (status === "complete" && payment_status == "paid") {
+    const sessionQuery = { sessionId };
     const existingPayment = await payments.findOne(sessionQuery);
-    if(existingPayment){
-        return res.send({success: false , message: "Payment already verified"}); 
+    if (existingPayment) {
+      return res.send({ success: false, message: "Payment already verified" });
     }
     const payment = {
-    sessionId,
-     status,
-    payment_status,
-    customer_email,
-    customer_details,
-    userId: metadata.userId,
-    payment_date: new Date(),
-    payment_intent,
-  }
-  const result = await payments.insertOne(payment); 
-  
-  const query = {_id: new ObjectId(metadata.userId)};
-  const  updatedDoc = {
-        $set : {
-          plan : "pro"
-        }
-  }
-  
-  const updateResult = await users.updateOne(
-    query,
-    updatedDoc
-  );
+      sessionId,
+      status,
+      payment_status,
+      customer_email,
+      customer_details,
+      userId: metadata.userId,
+      payment_date: new Date(),
+      payment_intent,
+    };
+    const result = await payments.insertOne(payment);
 
-  res.send({ success: true , result , updateResult});
-  return;
+    const query = { _id: new ObjectId(metadata.userId) };
+    const updatedDoc = {
+      $set: {
+        plan: "pro",
+      },
+    };
+
+    const updateResult = await users.updateOne(query, updatedDoc);
+
+    res.send({ success: true, result, updateResult });
+    return;
   }
 
- 
-
-  res.send({success : false , message: "payment verification failed"});
-})
+  res.send({ success: false, message: "payment verification failed" });
+});
 
 // 1. Get applications (can filter by studentEmail, tutorEmail, or tuitionId)
 app.get("/applications", async (req, res) => {
@@ -207,7 +254,9 @@ app.post("/applications", async (req, res) => {
   // Prevent duplicate application from same student for same tuition
   const existing = await applications.findOne({ tuitionId, studentEmail });
   if (existing) {
-    return res.status(400).send({ message: "You have already applied for this tuition." });
+    return res
+      .status(400)
+      .send({ message: "You have already applied for this tuition." });
   }
 
   const application = {
@@ -226,7 +275,12 @@ app.post("/applications", async (req, res) => {
   };
 
   const result = await applications.insertOne(application);
-  res.status(201).send({ message: "Application submitted successfully.", insertedId: result.insertedId });
+  res
+    .status(201)
+    .send({
+      message: "Application submitted successfully.",
+      insertedId: result.insertedId,
+    });
 });
 
 // Update application decision (accept or reject)
