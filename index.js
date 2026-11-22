@@ -12,23 +12,8 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// ─── Token Inspection Middleware ──────────────────────────────────────────────
-app.use((req, res, next) => {
-  const authHeader = req.headers["authorization"] || req.headers["authentication"];
-  if (authHeader) {
-    const token = authHeader.split(" ")[1];
-    console.log(`\n========================================`);
-    console.log(`[BACKEND RECEIVED TOKEN] ${req.method} ${req.originalUrl}`);
-    console.log(`[AUTH HEADER]: ${authHeader}`);
-    console.log(`[TOKEN]: ${token}`);
-    console.log(`========================================\n`);
-  }
-  next();
-});
-
 // ─── JWT Middleware ───────────────────────────────────────────────────────────
 // Better Auth exposes its public JWKS at /api/auth/jwks
-// The frontend sends: authorization: `Barer ${token}`
 const JWKS = createRemoteJWKSet(
   new URL(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/jwks`)
 );
@@ -36,12 +21,7 @@ const JWKS = createRemoteJWKSet(
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers["authorization"] || req.headers["authentication"];
 
-
-  console.log(`\n--- [verifyToken Middleware] ---`);
-  console.log(`Endpoint: ${req.method} ${req.originalUrl}`);
-
   if (!authHeader) {
-    console.log(`❌ No token provided in header`);
     return res.status(401).send({ message: "Unauthorized: No token provided" });
   }
 
@@ -49,19 +29,14 @@ const verifyToken = async (req, res, next) => {
   const token = authHeader.split(" ")[1];
 
   if (!token) {
-    console.log(`❌ Token malformed in header: "${authHeader}"`);
     return res.status(401).send({ message: "Unauthorized: Malformed token" });
   }
 
-  console.log(`🔑 Token to verify:`, token);
-
   try {
     const { payload } = await jwtVerify(token, JWKS);
-    console.log(`✅ Token successfully verified! User payload:`, payload);
     req.user = payload; // attach decoded payload to request
     next();
   } catch (err) {
-    console.error(`❌ Token verification failed:`, err.message);
     return res.status(401).send({ message: "Unauthorized: Invalid or expired token", error: err.message });
   }
 };
