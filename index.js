@@ -12,6 +12,20 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// ─── Token Inspection Middleware ──────────────────────────────────────────────
+app.use((req, res, next) => {
+  const authHeader = req.headers["authorization"] || req.headers["authentication"];
+  if (authHeader) {
+    const token = authHeader.split(" ")[1];
+    console.log(`\n========================================`);
+    console.log(`[BACKEND RECEIVED TOKEN] ${req.method} ${req.originalUrl}`);
+    console.log(`[AUTH HEADER]: ${authHeader}`);
+    console.log(`[TOKEN]: ${token}`);
+    console.log(`========================================\n`);
+  }
+  next();
+});
+
 // ─── JWT Middleware ───────────────────────────────────────────────────────────
 // Better Auth exposes its public JWKS at /api/auth/jwks
 // The frontend sends: authorization: `Barer ${token}`
@@ -22,7 +36,12 @@ const JWKS = createRemoteJWKSet(
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers["authorization"] || req.headers["authentication"];
 
+
+  console.log(`\n--- [verifyToken Middleware] ---`);
+  console.log(`Endpoint: ${req.method} ${req.originalUrl}`);
+
   if (!authHeader) {
+    console.log(`❌ No token provided in header`);
     return res.status(401).send({ message: "Unauthorized: No token provided" });
   }
 
@@ -30,15 +49,20 @@ const verifyToken = async (req, res, next) => {
   const token = authHeader.split(" ")[1];
 
   if (!token) {
+    console.log(`❌ Token malformed in header: "${authHeader}"`);
     return res.status(401).send({ message: "Unauthorized: Malformed token" });
   }
 
+  console.log(`🔑 Token to verify:`, token);
+
   try {
     const { payload } = await jwtVerify(token, JWKS);
+    console.log(`✅ Token successfully verified! User payload:`, payload);
     req.user = payload; // attach decoded payload to request
     next();
   } catch (err) {
-    return res.status(401).send({ message: "Unauthorized: Invalid or expired token" });
+    console.error(`❌ Token verification failed:`, err.message);
+    return res.status(401).send({ message: "Unauthorized: Invalid or expired token", error: err.message });
   }
 };
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,7 +80,7 @@ async function connectToMongoDB() {
   try {
     await client.connect();
 
-    console.log("Successfully connected to MongoDB!");
+    console.log("Successfully connected to MongoDB");
 
     db = client.db("MentorLagbe");
     tuitions = db.collection("tuition");
@@ -74,19 +98,52 @@ app.get("/", (req, res) => {
 });
 
 app.get("/users", async (req, res) => {
-  const cursor = users.find({});
+  const { email } = req.query;
+  const filter = email ? { email } : {};
+  const cursor = users.find(filter);
   const result = await cursor.toArray();
   res.send(result);
 });
 
-app.patch("/users/:id", verifyToken, async (req, res) => {
-  const { id } = req.params;
-  const data = req.body;
-  const filter = { _id: new ObjectId(id) };
-  const result = await users.updateOne(filter, {
-    $set: data,
-  });
-  res.send(result);
+app.get("/users/:id", verifyToken ,  async (req, res) => {
+  try {
+    const { id } = req.params;
+    let filter;
+    try {
+      filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }, { id: id }] };
+    } catch {
+      filter = { $or: [{ _id: id }, { id: id }] };
+    }
+    const result = await users.findOne(filter);
+    if (!result) return res.status(404).send({ message: "User not found" });
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.patch("/users/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    // Remove immutable fields if present
+    const { _id, id: bodyId, ...updateData } = data;
+
+    let filter;
+    try {
+      filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }, { id: id }] };
+    } catch {
+      filter = { $or: [{ _id: id }, { id: id }] };
+    }
+
+    const result = await users.updateOne(filter, {
+      $set: updateData,
+    });
+    res.send(result);
+  } catch (error) {
+    console.error("Error updating user:", error);
+    res.status(500).send({ message: error.message });
+  }
 });
 
 app.get("/tuition", async (req, res) => {
@@ -206,53 +263,81 @@ app.post("/tuitions", async (req, res) => {
     });
 });
 
-app.post("/payments", verifyToken, async (req, res) => {
-  const { sessionId } = req.body;
-  const {
-    status,
-    payment_status,
-    customer_email,
-    customer_details,
-    metadata,
-    payment_intent,
-    amount_total,   // ← ADD THIS
-    currency,       // ← ADD THIS (optional)
-  } = await stripe.checkout.sessions.retrieve(sessionId);
-
-  if (status === "complete" && payment_status == "paid") {
-    const sessionQuery = { sessionId };
-    const existingPayment = await payments.findOne(sessionQuery);
-    if (existingPayment) {
-      return res.send({ success: false, message: "Payment already verified" });
+app.post("/payments", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).send({ success: false, message: "Missing sessionId" });
     }
-    const payment = {
-      sessionId,
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const {
       status,
       payment_status,
       customer_email,
       customer_details,
-      userId: metadata.userId,
-      payment_date: new Date(),
+      metadata,
       payment_intent,
-      amount_total,  // ← ADD THIS (amount in cents, e.g. 1500 = $15.00)
-      currency,      // ← ADD THIS (e.g. "usd")
-    };
-    const result = await payments.insertOne(payment);
+      amount_total,
+      currency,
+    } = session;
 
-    const query = { _id: new ObjectId(metadata.userId) };
-    const updatedDoc = { $set: { plan: "pro" } };
-    const updateResult = await users.updateOne(query, updatedDoc);
+    if (status === "complete" && payment_status === "paid") {
+      const sessionQuery = { sessionId };
+      const existingPayment = await payments.findOne(sessionQuery);
+      if (existingPayment) {
+        return res.send({ success: true, message: "Payment already verified", payment: existingPayment });
+      }
 
-    res.send({ success: true, result, updateResult });
-    return;
+      const userId = metadata?.userId;
+      const payment = {
+        sessionId,
+        status,
+        payment_status,
+        customer_email,
+        customer_details,
+        userId: userId || "",
+        payment_date: new Date(),
+        payment_intent,
+        amount_total,
+        currency,
+      };
+      const result = await payments.insertOne(payment);
+
+      // Update user plan to "pro"
+      let updateResult = null;
+      if (userId) {
+        let userFilter;
+        try {
+          userFilter = { $or: [{ _id: new ObjectId(userId) }, { _id: userId }, { id: userId }] };
+        } catch {
+          userFilter = { $or: [{ _id: userId }, { id: userId }] };
+        }
+        updateResult = await users.updateOne(userFilter, { $set: { plan: "pro" } });
+      }
+
+      res.send({ success: true, result, updateResult });
+      return;
+    }
+
+    res.status(400).send({ success: false, message: "Payment verification failed or unpaid" });
+  } catch (error) {
+    console.error("Payment verification error:", error);
+    res.status(500).send({ success: false, message: error.message });
   }
-
-  res.send({ success: false, message: "payment verification failed" });
 });
 
-app.get("/payments", verifyToken, async (req, res) => {
-  const result = await payments.find().toArray();
-  res.send(result);
+app.get("/payments",verifyToken,  async (req, res) => {
+  try {
+    const { email, userId } = req.query;
+    const filter = {};
+    if (email) filter.customer_email = email;
+    if (userId) filter.userId = userId;
+    const result = await payments.find(filter).sort({ payment_date: -1 }).toArray();
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: err.message });
+  }
 });
 
 // 1. Get applications (can filter by studentEmail, tutorEmail, or tuitionId)
