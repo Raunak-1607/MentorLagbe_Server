@@ -30,7 +30,7 @@ app.use((req, res, next) => {
 // Better Auth exposes its public JWKS at /api/auth/jwks
 // The frontend sends: authorization: `Barer ${token}`
 const JWKS = createRemoteJWKSet(
-  new URL("http://localhost:3000/api/auth/jwks")
+  new URL(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/jwks`)
 );
 
 const verifyToken = async (req, res, next) => {
@@ -105,7 +105,7 @@ app.get("/users", async (req, res) => {
   res.send(result);
 });
 
-app.get("/users/:id", verifyToken ,  async (req, res) => {
+app.get("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
     let filter;
@@ -327,7 +327,7 @@ app.post("/payments", async (req, res) => {
   }
 });
 
-app.get("/payments",verifyToken,  async (req, res) => {
+app.get("/payments", async (req, res) => {
   try {
     const { email, userId } = req.query;
     const filter = {};
