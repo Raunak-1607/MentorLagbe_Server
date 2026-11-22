@@ -41,36 +41,46 @@ const verifyToken = async (req, res, next) => {
     return res.status(401).send({ message: "Unauthorized: Malformed token" });
   }
 
-  try {
-    // Dynamically detect frontend origin from token issuer, or request origin / referer, or env fallback
-    let origin = process.env.NEXT_PUBLIC_APP_URL;
-    try {
-      const decoded = decodeJwt(token);
-      if (decoded?.iss) {
-        origin = decoded.iss;
-      }
-    } catch {}
+  // Gather all possible origins for JWKS verification
+  const candidateOrigins = new Set();
 
-    if (!origin && req.headers.origin) {
-      origin = req.headers.origin;
-    }
-    if (!origin && req.headers.referer) {
-      try {
-        origin = new URL(req.headers.referer).origin;
-      } catch {}
-    }
-    if (!origin) {
-      origin = "http://localhost:3000";
-    }
-
-    const jwks = getJWKSForOrigin(origin);
-    const { payload } = await jwtVerify(token, jwks);
-    req.user = payload; // attach decoded payload to request
-    next();
-  } catch (err) {
-    console.error("JWT verification error:", err.message);
-    return res.status(401).send({ message: "Unauthorized: Invalid or expired token", error: err.message });
+  if (req.headers.origin) {
+    candidateOrigins.add(req.headers.origin.replace(/\/+$/, ""));
   }
+  if (req.headers.referer) {
+    try {
+      candidateOrigins.add(new URL(req.headers.referer).origin.replace(/\/+$/, ""));
+    } catch {}
+  }
+  try {
+    const decoded = decodeJwt(token);
+    if (decoded?.iss) {
+      candidateOrigins.add(decoded.iss.replace(/\/+$/, ""));
+    }
+  } catch {}
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    candidateOrigins.add(process.env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, ""));
+  }
+  candidateOrigins.add("https://mentor-lagbe-client-phi.vercel.app");
+  candidateOrigins.add("http://localhost:3000");
+
+  let lastError = null;
+  for (const origin of candidateOrigins) {
+    try {
+      const jwks = getJWKSForOrigin(origin);
+      const { payload } = await jwtVerify(token, jwks);
+      req.user = payload; // attach decoded payload to request
+      return next();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  console.error("JWT verification failed for all candidate origins:", lastError?.message);
+  return res.status(401).send({
+    message: "Unauthorized: Invalid or expired token",
+    error: lastError?.message,
+  });
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
