@@ -3,7 +3,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 import "dotenv/config";
 import Stripe from "stripe";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, decodeJwt } from "jose";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express();
@@ -14,9 +14,18 @@ app.use(express.json());
 
 // ─── JWT Middleware ───────────────────────────────────────────────────────────
 // Better Auth exposes its public JWKS at /api/auth/jwks
-const JWKS = createRemoteJWKSet(
-  new URL(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/jwks`)
-);
+const jwksCache = new Map();
+
+function getJWKSForOrigin(originUrl) {
+  const cleanUrl = originUrl.replace(/\/+$/, "");
+  if (!jwksCache.has(cleanUrl)) {
+    jwksCache.set(
+      cleanUrl,
+      createRemoteJWKSet(new URL(`${cleanUrl}/api/auth/jwks`))
+    );
+  }
+  return jwksCache.get(cleanUrl);
+}
 
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers["authorization"] || req.headers["authentication"];
@@ -33,10 +42,33 @@ const verifyToken = async (req, res, next) => {
   }
 
   try {
-    const { payload } = await jwtVerify(token, JWKS);
+    // Dynamically detect frontend origin from token issuer, or request origin / referer, or env fallback
+    let origin = process.env.NEXT_PUBLIC_APP_URL;
+    try {
+      const decoded = decodeJwt(token);
+      if (decoded?.iss) {
+        origin = decoded.iss;
+      }
+    } catch {}
+
+    if (!origin && req.headers.origin) {
+      origin = req.headers.origin;
+    }
+    if (!origin && req.headers.referer) {
+      try {
+        origin = new URL(req.headers.referer).origin;
+      } catch {}
+    }
+    if (!origin) {
+      origin = "http://localhost:3000";
+    }
+
+    const jwks = getJWKSForOrigin(origin);
+    const { payload } = await jwtVerify(token, jwks);
     req.user = payload; // attach decoded payload to request
     next();
   } catch (err) {
+    console.error("JWT verification error:", err.message);
     return res.status(401).send({ message: "Unauthorized: Invalid or expired token", error: err.message });
   }
 };
@@ -134,16 +166,17 @@ app.patch("/tuition/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
+    const { _id, id: bodyId, ...cleanUpdateData } = updateData;
 
     let filter;
     try {
-      filter = { _id: new ObjectId(id) };
+      filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }, { id: id }] };
     } catch {
-      filter = { id: id };
+      filter = { $or: [{ _id: id }, { id: id }] };
     }
 
     const result = await tuitions.updateOne(filter, {
-      $set: updateData,
+      $set: cleanUpdateData,
     });
 
     res.send(result);
@@ -159,9 +192,9 @@ app.delete("/tuition/:id", verifyToken, async (req, res) => {
 
     let filter;
     try {
-      filter = { _id: new ObjectId(id) };
+      filter = { $or: [{ _id: new ObjectId(id) }, { _id: id }, { id: id }] };
     } catch {
-      filter = { id: id };
+      filter = { $or: [{ _id: id }, { id: id }] };
     }
 
     const result = await tuitions.deleteOne(filter);
