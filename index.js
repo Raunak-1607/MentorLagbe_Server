@@ -3,6 +3,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
 import "dotenv/config";
 import Stripe from "stripe";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const app = express();
@@ -10,6 +11,37 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// ─── JWT Middleware ───────────────────────────────────────────────────────────
+// Better Auth exposes its public JWKS at /api/auth/jwks
+// The frontend sends: authorization: `Barer ${token}`
+const JWKS = createRemoteJWKSet(
+  new URL("http://localhost:3000/api/auth/jwks")
+);
+
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers["authorization"] || req.headers["authentication"];
+
+  if (!authHeader) {
+    return res.status(401).send({ message: "Unauthorized: No token provided" });
+  }
+
+  // Accept both "Bearer <token>" and "Barer <token>"
+  const token = authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized: Malformed token" });
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+    req.user = payload; // attach decoded payload to request
+    next();
+  } catch (err) {
+    return res.status(401).send({ message: "Unauthorized: Invalid or expired token" });
+  }
+};
+// ─────────────────────────────────────────────────────────────────────────────
 
 const client = new MongoClient(process.env.MONGODB_URL);
 
@@ -47,7 +79,7 @@ app.get("/users", async (req, res) => {
   res.send(result);
 });
 
-app.patch("/users/:id", async (req, res) => {
+app.patch("/users/:id", verifyToken, async (req, res) => {
   const { id } = req.params;
   const data = req.body;
   const filter = { _id: new ObjectId(id) };
@@ -66,7 +98,7 @@ app.get("/tuition", async (req, res) => {
 });
 
 // 1. PATCH /tuition/:id (Handles editing fields and closing/reopening isActive)
-app.patch("/tuition/:id", async (req, res) => {
+app.patch("/tuition/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -89,7 +121,7 @@ app.patch("/tuition/:id", async (req, res) => {
 });
 
 // 2. DELETE /tuition/:id (Handles deleting a tuition post)
-app.delete("/tuition/:id", async (req, res) => {
+app.delete("/tuition/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -174,7 +206,7 @@ app.post("/tuitions", async (req, res) => {
     });
 });
 
-app.post("/payments", async (req, res) => {
+app.post("/payments", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
   const {
     status,
@@ -183,6 +215,8 @@ app.post("/payments", async (req, res) => {
     customer_details,
     metadata,
     payment_intent,
+    amount_total,   // ← ADD THIS
+    currency,       // ← ADD THIS (optional)
   } = await stripe.checkout.sessions.retrieve(sessionId);
 
   if (status === "complete" && payment_status == "paid") {
@@ -200,16 +234,13 @@ app.post("/payments", async (req, res) => {
       userId: metadata.userId,
       payment_date: new Date(),
       payment_intent,
+      amount_total,  // ← ADD THIS (amount in cents, e.g. 1500 = $15.00)
+      currency,      // ← ADD THIS (e.g. "usd")
     };
     const result = await payments.insertOne(payment);
 
     const query = { _id: new ObjectId(metadata.userId) };
-    const updatedDoc = {
-      $set: {
-        plan: "pro",
-      },
-    };
-
+    const updatedDoc = { $set: { plan: "pro" } };
     const updateResult = await users.updateOne(query, updatedDoc);
 
     res.send({ success: true, result, updateResult });
@@ -217,6 +248,11 @@ app.post("/payments", async (req, res) => {
   }
 
   res.send({ success: false, message: "payment verification failed" });
+});
+
+app.get("/payments", verifyToken, async (req, res) => {
+  const result = await payments.find().toArray();
+  res.send(result);
 });
 
 // 1. Get applications (can filter by studentEmail, tutorEmail, or tuitionId)
@@ -233,7 +269,7 @@ app.get("/applications", async (req, res) => {
 });
 
 // 2. Post new student tuition application
-app.post("/applications", async (req, res) => {
+app.post("/applications", verifyToken, async (req, res) => {
   const {
     tuitionId,
     tuitionTitle,
@@ -284,7 +320,7 @@ app.post("/applications", async (req, res) => {
 });
 
 // Update application decision (accept or reject)
-app.patch("/applications/:id", async (req, res) => {
+app.patch("/applications/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
